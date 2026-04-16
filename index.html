@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>GitHub Pages × GAS 連携テスト</title>
+  <style>
+    body { font-family: sans-serif; text-align: center; padding: 50px; background: #f4f7f6; }
+    button { padding: 15px 30px; font-size: 18px; background: #3498db; color: white; border: none; border-radius: 5px; cursor: pointer; }
+    button:active { background: #2980b9; }
+    #result { margin-top: 20px; font-weight: bold; color: #e74c3c; font-size: 1.2rem; }
+  </style>
+</head>
+<body>
+
+  <h2>GitHub Pages 稼働テスト</h2>
+  <p>ボタンを押すと、裏側でGASと通信してデータを送ります。</p>
+
+  <button onclick="sendData()">GASへデータを送る！</button>
+  <div id="result"></div>
+
+  <script>
+    // ★ここにステップ1で取得したGASのWebアプリURLを貼り付けます
+    const GAS_URL = "https://script.google.com/macros/s/AKfycbz_8w3xfGrvx0vJ5hx0RYQi5l9B-Xnxsn0FK1NDkpknbLuiJAIwOYch9rDlKprxdpzJAA/exec";
+
+    async function sendData() {
+      const resultArea = document.getElementById("result");
+      resultArea.style.color = "#333";
+      resultArea.innerText = "通信中...";
+
+      // GASに送りたいデータ
+      const payload = { message: "こんにちは！GitHubの画面から送りました！" };
+
+      try {
+        // fetch関数でGASに向けて通信を行う
+        const response = await fetch(GAS_URL, {
+          method: "POST",
+          // ★ここが最大の裏技: application/jsonにするとCORSエラーになるので text/plain で送る！
+          headers: { "Content-Type": "text/plain" },
+          body: JSON.stringify(payload)
+        });
+
+        // GASから返ってきた結果（JSON）を受け取る
+        const resultData = await response.json();
+        
+        if(resultData.success) {
+          resultArea.style.color = "#2ecc71";
+          resultArea.innerText = resultData.message;
+        } else {
+          resultArea.style.color = "#e74c3c";
+          resultArea.innerText = "エラー: " + resultData.error;
+        }
+      } catch(e) {
+        resultArea.style.color = "#e74c3c";
+        resultArea.innerText = "通信失敗: " + e.message;
+      }
+    }
+  </script>
+
+</body>
+</html>

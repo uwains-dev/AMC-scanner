@@ -273,11 +273,11 @@
 
 <script>
   // =========================================================================
-  // ★重要：ここにコピーしたGASの「ウェブアプリのURL」を貼り付けてください！
+  // ★重要：ここに新しく発行した「全員」アクセス権限のGAS URLを貼り付けてください！
   // =========================================================================
-  const GAS_URL = "https://script.google.com/a/macros/araimc.co.jp/s/AKfycbxsGI9cBdlkzuVtICthM023-hdtSCZIaLa-k36T9ntSgqARDdbf3d1gickX7-SCB71c/exec";
+  const GAS_URL = "https://script.google.com/macros/s/AKfycbwmY8deWjVZl7yaBP8iHneXtBUaf53L5goXuOFrHziYtRN3KzMvhg_LY_UQnufYUX9N/exec";
 
-  // API通信用関数（fetchを使ってCORSを回避）
+  // API通信用関数
   async function gasAPI(action, params = {}) {
     showLoader("処理中...");
     try {
@@ -307,9 +307,6 @@
     document.getElementById('global-loader').style.display = 'none';
   }
 
-  // =========================================================================
-  // 状態管理変数
-  // =========================================================================
   let MASTER_DATA = {};
   let RESUME_TARGET_ID = null;
   let RETRY_TARGET_ID = null;
@@ -369,7 +366,6 @@
     }
     container.innerHTML = "";
     
-    // グループ化
     const groups = {};
     list.forEach(item => {
       if (item.groupId) {
@@ -404,7 +400,6 @@
         const card = document.createElement('div');
         card.className = 'card';
         
-        // 1台目 または 単体の場合はフルコントロール
         if (idx === 0) {
           card.innerHTML = `
             <div style="font-weight:bold; color:#333; margin-bottom:8px; font-size:1.1rem;">${titleText}</div>
@@ -426,7 +421,6 @@
             <button class="btn btn-retry" style="font-size:0.8rem; padding:8px;" onclick="handleRetryRequest('${gItem.id}')">再検査(不良登録)</button>
           `;
         } else {
-          // 2台目以降は制限付き表示
           card.innerHTML = `
             <div style="font-weight:bold; color:#333; margin-bottom:8px; font-size:1.1rem;">${titleText}</div>
             <div class="active-info" style="display:flex; flex-direction:column; gap:6px; font-size:1rem; margin-bottom:12px;">
@@ -731,14 +725,16 @@
   function renderTable(id, map, max) { let html = "<table>"; Object.keys(map).sort().forEach(k => { let val = map[k]; let percent = max > 0 ? (val / max * 100) : 0; html += `<tr><td style="width:55%">${k}</td><td style="text-align:right; font-weight:bold;">${formatTime(val)}<div class="bar-bg"><div class="bar-fill" style="width:${percent}%"></div></div></td></tr>`; }); document.getElementById(id).innerHTML = html + "</table>"; }
 
   // =========================================================================
-  // ★新設：ライブカメラ 連続スキャン処理
+  // ★追加・修正：ライブカメラ 連続スキャン＆重複防止処理
   // =========================================================================
   let html5QrCode = null;
   let currentScanTargetId = null;
   let scanMsgTimeout = null;
+  let lastScannedText = ""; // ★重複読み込み防止用
 
   function startLiveCamera(targetId) {
     currentScanTargetId = targetId;
+    lastScannedText = ""; // カメラ起動時にリセット
     document.getElementById('qr-modal').style.display = 'flex';
     document.getElementById('qr-scan-msg').innerText = "カメラ枠内にQRコードをかざしてください";
     document.getElementById('qr-scan-msg').style.color = "#666";
@@ -748,6 +744,30 @@
       { facingMode: "environment" },
       { fps: 10, qrbox: { width: 250, height: 250 } },
       (decodedText, decodedResult) => {
+        // ★追加：重複読み込み防止（直前と同じ、または入力済みの場合は無視）
+        if (decodedText === lastScannedText) return;
+
+        let isDuplicate = false;
+        if (currentScanTargetId.startsWith('multi-case-')) {
+          document.querySelectorAll('.multi-case-input').forEach(inp => {
+            if (inp.value === decodedText) isDuplicate = true;
+          });
+        }
+        
+        if (isDuplicate) {
+          document.getElementById('qr-scan-msg').innerText = `【${decodedText}】は読込済みです`;
+          document.getElementById('qr-scan-msg').style.color = "#e74c3c";
+          clearTimeout(scanMsgTimeout);
+          scanMsgTimeout = setTimeout(() => {
+            document.getElementById('qr-scan-msg').innerText = "カメラ枠内に次のQRコードをかざしてください";
+            document.getElementById('qr-scan-msg').style.color = "#666";
+            lastScannedText = ""; // リセット
+          }, 2000);
+          return;
+        }
+
+        lastScannedText = decodedText; // 更新
+
         // スキャン成功時
         playBeep();
         document.getElementById(currentScanTargetId).value = decodedText;
@@ -768,7 +788,8 @@
            scanMsgTimeout = setTimeout(() => {
               document.getElementById('qr-scan-msg').innerText = "カメラ枠内に次のQRコードをかざしてください";
               document.getElementById('qr-scan-msg').style.color = "#666";
-           }, 2000);
+              lastScannedText = ""; // ★連続読み込みできるように数秒後にリセット
+           }, 1500);
         } else {
            // 単体の場合は一度で閉じる
            closeLiveCamera();

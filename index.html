@@ -28,8 +28,9 @@
     /* OCR用プレビューとガイド枠 */
     #ocr-container { display: none; position: relative; width: 100%; }
     #ocr-video { width: 100%; display: block; }
-    .ocr-guide { position: absolute; top: 35%; left: 10%; width: 80%; height: 30%; border: 3px solid #2ecc71; box-sizing: border-box; box-shadow: 0 0 0 9999px rgba(0,0,0,0.6); pointer-events: none; }
-    .ocr-guide::before { content: 'この枠に文字を合わせる'; position: absolute; top: -25px; left: 0; width: 100%; text-align: center; color: #2ecc71; font-weight: bold; font-size: 14px; text-shadow: 1px 1px 2px #000; }
+    /* ★修正：高さを12%に狭め、1行用のスリットに変更 */
+    .ocr-guide { position: absolute; top: 44%; left: 10%; width: 80%; height: 12%; border: 3px solid #2ecc71; box-sizing: border-box; box-shadow: 0 0 0 9999px rgba(0,0,0,0.6); pointer-events: none; }
+    .ocr-guide::before { content: 'この枠に文字を合わせる（1行）'; position: absolute; top: -25px; left: 0; width: 100%; text-align: center; color: #2ecc71; font-weight: bold; font-size: 14px; text-shadow: 1px 1px 2px #000; }
     
     .btn-capture { width: 100%; max-width: 500px; padding: 15px; background: #f39c12; color: white; border: none; border-radius: 8px; font-size: 1.2rem; font-weight: bold; cursor: pointer; margin-top: 15px; box-shadow: 0 4px #d35400; display: none; margin-left: auto; margin-right: auto; }
     .btn-capture:active { transform: translateY(2px); box-shadow: 0 2px #d35400; }
@@ -45,6 +46,10 @@
     
     .btn-register { width: 100%; padding: 15px; background: #2ecc71; color: white; border: none; border-radius: 8px; font-size: 1.2rem; font-weight: bold; cursor: pointer; margin-top: 20px; box-shadow: 0 4px #27ae60; }
     .btn-register:active { transform: translateY(2px); box-shadow: 0 2px #27ae60; }
+    
+    /* ★追加：キャンセルボタン */
+    .btn-cancel { width: 100%; padding: 15px; background: #95a5a6; color: white; border: none; border-radius: 8px; font-size: 1.1rem; font-weight: bold; cursor: pointer; margin-top: 10px; box-shadow: 0 4px #7f8c8d; }
+    .btn-cancel:active { transform: translateY(2px); box-shadow: 0 2px #7f8c8d; }
   </style>
 </head>
 <body>
@@ -81,6 +86,8 @@
   </div>
 
   <button class="btn-register" onclick="sendDataToParent()">一括登録して戻る</button>
+  
+  <button class="btn-cancel" onclick="cancelScan()">キャンセル（閉じる）</button>
 
 <script>
   let scannedValues = [];
@@ -88,8 +95,8 @@
   // モード管理
   const MODES = [
     { id: 'QR', label: 'QR爆速スキャン', cls: 'mode-QR' },
-    { id: 'ENG', label: '文字読取 (英数字/速い)', cls: 'mode-ENG', lang: 'eng' },
-    { id: 'JPN', label: '文字読取 (日本語/重い)', cls: 'mode-JPN', lang: 'jpn+eng' }
+    { id: 'ENG', label: '文字読取 (英数字)', cls: 'mode-ENG', lang: 'eng' },
+    { id: 'JPN', label: '文字読取 (日本語)', cls: 'mode-JPN', lang: 'jpn+eng' }
   ];
   let currentModeIndex = 0;
 
@@ -138,7 +145,7 @@
       startOcrCamera();
       
       if (newMode.id === 'JPN') {
-        document.getElementById('ocr-status').innerText = "※日本語モードの初回はAIデータのDLに時間がかかります";
+        document.getElementById('ocr-status').innerText = "※日本語の初回はAIデータのDLに少し時間がかかります";
       }
     }
   }
@@ -199,13 +206,13 @@
     btn.disabled = true;
     statusEl.innerText = "画像を解析準備中...";
 
-    // 画面上のガイド枠（トップ35%、左10%、幅80%、高さ30%）に合わせて画像を切り抜く
+    // ★修正：画面上のガイド枠（トップ44%、高さ12%）に合わせて画像を切り抜く
     const vw = video.videoWidth;
     const vh = video.videoHeight;
     const cx = vw * 0.1;
-    const cy = vh * 0.35;
+    const cy = vh * 0.44; // 1行スリットの位置
     const cw = vw * 0.8;
-    const ch = vh * 0.3;
+    const ch = vh * 0.12; // 1行スリットの高さ
 
     canvas.width = cw;
     canvas.height = ch;
@@ -216,7 +223,7 @@
     const mode = MODES[currentModeIndex];
     
     try {
-      statusEl.innerText = "AIエンジン初期化・解析中...(初回は数十秒かかります)";
+      statusEl.innerText = "AIエンジン解析中...(初回は少し時間がかかります)";
       
       const result = await Tesseract.recognize(canvas, mode.lang, {
         logger: m => {
@@ -322,6 +329,16 @@
         type: 'AMC_QR_SCAN_RESULT',
         data: finalData
       }, "*");
+    }
+    window.close();
+  }
+
+  // ★追加：キャンセル処理
+  function cancelScan() {
+    if (scannedValues.length > 0) {
+      if (!confirm("読み取ったデータが破棄されます。キャンセルして戻りますか？")) {
+        return;
+      }
     }
     window.close();
   }

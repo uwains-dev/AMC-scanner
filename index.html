@@ -196,10 +196,10 @@ function startQrCamera() {
     return { width: boxSize, height: boxSize };
   };
 
-  html5QrCode.start(
-    { 
-      facingMode: "environment" 
-    }, 
+html5QrCode.start(
+  { 
+    facingMode: { exact: "environment" } 
+  },
     { 
       fps: 15, // 10から15に増やすことで、カメラを動かしたときの追随性をアップ
       qrbox: qrboxFunction, // 動的サイズを適用
@@ -222,12 +222,41 @@ function startQrCamera() {
     if (html5QrCode) { try { await html5QrCode.stop(); html5QrCode.clear(); } catch(e){} html5QrCode = null; }
   }
 
-  // 52
+// 52
   async function startOcrCamera() {
+    const constraintsPrimary = {
+      video: {
+        facingMode: { exact: "environment" }, // まずは背面カメラを絶対強制
+        width: { ideal: 1280 },
+        height: { ideal: 720 }
+      }
+    };
+
+    const constraintsBackup = {
+      video: {
+        facingMode: "environment", // エラー時のバックアップ（標準的な背面指定）
+        width: { ideal: 1280 },
+        height: { ideal: 720 }
+      }
+    };
+
     try {
-      ocrStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment", width: { ideal: 1280 }, height: { ideal: 720 } } });
+      // 1. まずは強制モードでカメラ起動を試みる
+      ocrStream = await navigator.mediaDevices.getUserMedia(constraintsPrimary);
       document.getElementById('ocr-video').srcObject = ocrStream;
-    } catch (err) { alert("カメラの起動に失敗しました。"); }
+    } catch (err) {
+      console.warn("背面カメラの強制起動に失敗しました。バックアップモードで再試行します。", err);
+      
+      try {
+        // 2. 失敗した場合、制限を緩めて再試行
+        ocrStream = await navigator.mediaDevices.getUserMedia(constraintsBackup);
+        document.getElementById('ocr-video').srcObject = ocrStream;
+      } catch (backupErr) {
+        // 3. どちらもダメだった場合のみアラートを出す
+        console.error("すべてのカメラ起動処理に失敗しました。", backupErr);
+        alert("カメラの起動に失敗しました。カメラの権限やブラウザの設定を確認してください。");
+      }
+    }
   }
 
   // 53

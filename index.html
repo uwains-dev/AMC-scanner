@@ -138,6 +138,40 @@
   let qrScanLoopId = null;
   let ocrStream = null;
 
+  // 同じQRをかざし続けたときに、毎フレーム登録・エラー音が鳴らないようにするための記録
+  const SAME_QR_SILENT_MS = 2000;
+  let lastQrValue = null;
+  let lastQrSeenAt = 0;
+
+  // ビープ音用のAudioContextは1つを使い回す（毎回作るとブラウザの上限で鳴らなくなるため）
+  let audioCtx = null;
+
+  // ============================================================
+  // QRの中身を文字列に復号する
+  //  ・jsQRの code.data は UTF-8 として解釈した結果のため、
+  //    Shift_JIS のQR（資材管理の部品ラベル等）では空文字になる。
+  //  ・code.binaryData（生のバイト列）を UTF-8 で読み、読めなければ Shift_JIS で読む。
+  //    英数字やUTF-8のQRは従来と同じ結果になる。
+  //  ・末尾の改行は取り除く。
+  // ============================================================
+  let decoderUtf8 = null;
+  let decoderSjis = null;
+  try { decoderUtf8 = new TextDecoder('utf-8', { fatal: true }); } catch (e) {}
+  try { decoderSjis = new TextDecoder('shift_jis'); } catch (e) {}
+
+  function decodeQr(code) {
+    const raw = code.binaryData;
+    if (!raw || raw.length === 0 || !decoderUtf8) return code.data;
+    const bytes = Uint8Array.from(raw);
+    let text;
+    try {
+      text = decoderUtf8.decode(bytes);
+    } catch (e) {
+      text = decoderSjis ? decoderSjis.decode(bytes) : code.data;
+    }
+    return text.replace(/[\r\n]+$/, '');
+  }
+
   window.onload = () => {
     updateFrameUI();
     startQrCamera();
@@ -222,7 +256,17 @@
       ctx.drawImage(video, 0, 0);
       const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
       const code = jsQR(imageData.data, canvas.width, canvas.height, { inversionAttempts: "dontInvert" });
-      if (code) processScan(code.data);
+      if (!code) return;
+      const val = decodeQr(code);
+      if (!val || val.trim() === '') return;
+      const now = Date.now();
+      if (val === lastQrValue && now - lastQrSeenAt < SAME_QR_SILENT_MS) {
+        lastQrSeenAt = now; // かざし続けている間は黙って無視
+        return;
+      }
+      lastQrValue = val;
+      lastQrSeenAt = now;
+      processScan(val);
     }
     qrScanLoopId = requestAnimationFrame(scanLoop);
   }
@@ -332,7 +376,11 @@
 
   function updateValue(index, newVal) { scannedValues[index] = newVal; }
 
-  function removeValue(index) { scannedValues.splice(index, 1); updateUI(); }
+  function removeValue(index) {
+    if (scannedValues[index] === lastQrValue) lastQrValue = null;
+    scannedValues.splice(index, 1);
+    updateUI();
+  }
 
   function updateUI() {
     const container = document.getElementById('result-list');
@@ -344,19 +392,35 @@
     container.innerHTML = "";
     scannedValues.slice().reverse().forEach((val, reverseIndex) => {
       const actualIndex = scannedValues.length - 1 - reverseIndex;
-      container.innerHTML += `
-        <div class="input-row">
-          <span style="width:30px; font-weight:bold; color:#7f8c8d; font-size:0.8rem;">${actualIndex + 1}.</span>
-          <input type="text" value="${val}" onchange="updateValue(${actualIndex}, this.value)">
-          <button onclick="removeValue(${actualIndex})">×</button>
-        </div>
-      `;
+
+      const row = document.createElement('div');
+      row.className = 'input-row';
+
+      const no = document.createElement('span');
+      no.style.cssText = 'width:30px; font-weight:bold; color:#7f8c8d; font-size:0.8rem;';
+      no.textContent = (actualIndex + 1) + '.';
+
+      const input = document.createElement('input');
+      input.type = 'text';
+      input.value = val;
+      input.addEventListener('change', () => updateValue(actualIndex, input.value));
+
+      const del = document.createElement('button');
+      del.textContent = '×';
+      del.addEventListener('click', () => removeValue(actualIndex));
+
+      row.appendChild(no);
+      row.appendChild(input);
+      row.appendChild(del);
+      container.appendChild(row);
     });
   }
 
   function playBeep(type) {
     try {
-      const ctx = new (window.AudioContext || window.webkitAudioContext)();
+      if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      if (audioCtx.state === 'suspended') audioCtx.resume();
+      const ctx = audioCtx;
       const osc = ctx.createOscillator();
       osc.type = "sine";
       if (type === 'success') { osc.frequency.setValueAtTime(1200, ctx.currentTime); osc.connect(ctx.destination); osc.start(); osc.stop(ctx.currentTime + 0.1); }

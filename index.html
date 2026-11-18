@@ -7,6 +7,7 @@
   <link rel="icon" href="data:,">
   <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@zxing/library@0.21.3/umd/index.min.js"></script>
   <style>
     body { font-family: sans-serif; margin: 0; padding: 15px; background: #f4f7f6; color: #333; text-align: center; }
     .header-container {
@@ -36,15 +37,15 @@
       top: 50%;
       left: 50%;
       transform: translate(-50%, -50%);
-      width: 65%;
-      aspect-ratio: 1;
+      width: 80%;
+      aspect-ratio: 1.6;
       border: 3px solid #3498db;
       box-shadow: 0 0 0 9999px rgba(0,0,0,0.5);
       pointer-events: none;
       box-sizing: border-box;
     }
     .qr-guide::before {
-      content: 'QRコードを枠内に合わせる';
+      content: 'QR・バーコードを枠内に合わせる（バーコードは横向き）';
       position: absolute;
       top: -26px;
       left: 0;
@@ -65,6 +66,7 @@
     .list-header { display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid #3498db; padding-bottom: 8px; margin-bottom: 15px; }
     .input-row { display: flex; margin-bottom: 10px; align-items: center; }
     .input-row input { flex: 1; padding: 12px; border: 1px solid #ccc; border-radius: 4px; font-size: 1rem; }
+    .fmt-tag { margin-left: 6px; margin-right: 6px; min-width: 56px; padding: 2px 6px; border-radius: 10px; background: #ecf0f1; color: #7f8c8d; font-size: 0.7rem; font-weight: bold; text-align: center; }
     .input-row button { margin-left: 8px; background: #e74c3c; color: white; border: none; border-radius: 4px; width: 45px; cursor: pointer; font-weight: bold; font-size: 1.2rem; }
     .btn-register { width: 100%; padding: 15px; background: #2ecc71; color: white; border: none; border-radius: 8px; font-size: 1.2rem; font-weight: bold; cursor: pointer; margin-top: 20px; box-shadow: 0 4px #27ae60; }
     .btn-register:active { transform: translateY(2px); box-shadow: 0 2px #27ae60; }
@@ -82,7 +84,7 @@
   </div>
 
   <div class="mode-control">
-    <span id="mode-badge" class="mode-badge mode-QR">QRスキャン</span>
+    <span id="mode-badge" class="mode-badge mode-QR">QR・バーコード</span>
     <button class="btn-switch" onclick="toggleMode()">🔄 切替</button>
     <button id="btn-frame" class="btn-switch" onclick="toggleFrameSize()" style="display:none; background:#8e44ad;">📏 枠:大</button>
   </div>
@@ -98,6 +100,7 @@
     </div>
   </div>
   <canvas id="qr-canvas" style="display:none;"></canvas>
+  <canvas id="bar-canvas" style="display:none;"></canvas>
 
   <button id="btn-capture" class="btn-capture" onclick="captureAndOcr()">📸 枠内を撮影して解析</button>
   <div id="ocr-status"></div>
@@ -109,7 +112,7 @@
       <span id="scan-count" style="background:#3498db; color:white; padding:4px 12px; border-radius:20px; font-size:0.9rem; font-weight:bold;">0 件</span>
     </div>
     <div id="result-list">
-      <div style="color:#aaa; text-align:center; padding:20px 0;">QRをかざすか、文字を撮影してください</div>
+      <div style="color:#aaa; text-align:center; padding:20px 0;">QR・バーコードをかざすか、文字を撮影してください</div>
     </div>
   </div>
 
@@ -117,11 +120,23 @@
   <button class="btn-cancel" onclick="cancelScan()">キャンセル（閉じる）</button>
 
 <script>
+  // ============================================================
+  // 2026-11-18 改修：1次元バーコードも読めるようにした
+  //  ・QR は従来どおり jsQR（Shift_JIS 対応のまま）。
+  //  ・QR が見つからないフレームでは、枠内を1次元バーコードとして読む。
+  //    Android の Chrome などブラウザ標準の BarcodeDetector があればそれを使い、
+  //    無ければ（iPhone など）ZXing で読む。
+  //  ・対象：CODE39・CODE128・NW-7（CODABAR）・JAN（EAN-13／EAN-8）。
+  //  ・1次元は誤読を防ぐため、同じ値を2回続けて読めたときだけ登録する。
+  //  ・呼び出し元へは従来の data（文字列の配列）に加えて、
+  //    items（{ value, format } の配列）も渡す。data だけを見ている呼び出し元はそのまま動く。
+  // ============================================================
   let scannedValues = [];
+  let scannedFormats = [];
   let masterReferenceList = [];
 
   const MODES = [
-    { id: 'QR', label: 'QRスキャン', cls: 'mode-QR' },
+    { id: 'QR', label: 'QR・バーコード', cls: 'mode-QR' },
     { id: 'ENG', label: '文字読取 (英数字)', cls: 'mode-ENG', lang: 'eng' },
     { id: 'JPN', label: '文字読取 (日本語)', cls: 'mode-JPN', lang: 'jpn+eng' }
   ];
@@ -145,6 +160,19 @@
 
   // ビープ音用のAudioContextは1つを使い回す（毎回作るとブラウザの上限で鳴らなくなるため）
   let audioCtx = null;
+
+  // 1次元バーコード読み取りの設定
+  const BARCODE_INTERVAL_MS = 200;   // 1次元を試す間隔（QRの読み取りを重くしないため）
+  const BARCODE_CONFIRM_MS = 1500;   // この時間内に同じ値を2回読めたら登録
+  const BARCODE_MAX_WIDTH = 1024;    // 解析する画像の最大幅（速度のため縮小）
+  const NATIVE_FORMATS = ['code_39', 'code_128', 'codabar', 'ean_13', 'ean_8'];
+  let nativeDetector = null;
+  let zxingReader = null;
+  let barcodeReady = false;
+  let barcodeBusy = false;
+  let lastBarcodeTry = 0;
+  let pendingBarcode = null;
+  let pendingBarcodeAt = 0;
 
   // ============================================================
   // QRの中身を文字列に復号する
@@ -172,8 +200,118 @@
     return text.replace(/[\r\n]+$/, '');
   }
 
+  // ============================================================
+  // 1次元バーコードの読み取り準備
+  //  ・BarcodeDetector が CODE39 と CODE128 の両方に対応していればそれを使う。
+  //  ・使えなければ ZXing を使う。どちらも無ければ QR だけを読む。
+  // ============================================================
+  async function initBarcodeReaders() {
+    if ('BarcodeDetector' in window) {
+      try {
+        const supported = await window.BarcodeDetector.getSupportedFormats();
+        const formats = NATIVE_FORMATS.filter(f => supported.includes(f));
+        if (formats.includes('code_39') && formats.includes('code_128')) {
+          nativeDetector = new window.BarcodeDetector({ formats });
+        }
+      } catch (e) { nativeDetector = null; }
+    }
+    if (!nativeDetector && window.ZXing) {
+      try {
+        const Z = window.ZXing;
+        zxingReader = new Z.MultiFormatReader();
+        const hints = new Map();
+        hints.set(Z.DecodeHintType.POSSIBLE_FORMATS, [
+          Z.BarcodeFormat.CODE_39, Z.BarcodeFormat.CODE_128, Z.BarcodeFormat.CODABAR,
+          Z.BarcodeFormat.EAN_13, Z.BarcodeFormat.EAN_8
+        ]);
+        hints.set(Z.DecodeHintType.TRY_HARDER, true);
+        zxingReader.setHints(hints);
+      } catch (e) { zxingReader = null; }
+    }
+    barcodeReady = !!(nativeDetector || zxingReader);
+  }
+
+  // 枠（横長）の範囲を切り出して bar-canvas に描く
+  function drawGuideArea(video, canvas) {
+    const vw = video.videoWidth, vh = video.videoHeight;
+    const cw = Math.round(vw * 0.8);
+    const ch = Math.min(vh, Math.round(cw / 1.6));
+    const cx = Math.round((vw - cw) / 2), cy = Math.round((vh - ch) / 2);
+    const scale = Math.min(1, BARCODE_MAX_WIDTH / cw);
+    canvas.width = Math.round(cw * scale);
+    canvas.height = Math.round(ch * scale);
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    ctx.drawImage(video, cx, cy, cw, ch, 0, 0, canvas.width, canvas.height);
+    return ctx;
+  }
+
+  // ZXing で1次元バーコードを読む（見つからなければ null）
+  function decodeWithZxing(canvas, ctx) {
+    const Z = window.ZXing;
+    const w = canvas.width, h = canvas.height;
+    const rgba = ctx.getImageData(0, 0, w, h).data;
+    const lum = new Uint8ClampedArray(w * h);
+    for (let i = 0, j = 0; j < lum.length; i += 4, j++) {
+      lum[j] = (rgba[i] * 77 + rgba[i + 1] * 150 + rgba[i + 2] * 29) >> 8;
+    }
+    try {
+      const bitmap = new Z.BinaryBitmap(new Z.HybridBinarizer(new Z.RGBLuminanceSource(lum, w, h)));
+      const r = zxingReader.decodeWithState(bitmap);
+      return { value: r.getText(), format: Z.BarcodeFormat[r.getBarcodeFormat()] };
+    } catch (e) {
+      return null; // 見つからないときも例外になる
+    }
+  }
+
+  // 1フレーム分、1次元バーコードを試す
+  async function tryBarcode(video) {
+    if (!barcodeReady || barcodeBusy) return;
+    barcodeBusy = true;
+    try {
+      const canvas = document.getElementById('bar-canvas');
+      const ctx = drawGuideArea(video, canvas);
+      let found = null;
+      if (nativeDetector) {
+        const list = await nativeDetector.detect(canvas);
+        if (list && list.length > 0) found = { value: list[0].rawValue, format: String(list[0].format).toUpperCase() };
+      } else {
+        found = decodeWithZxing(canvas, ctx);
+      }
+      if (found && found.value && found.value.trim() !== '') confirmBarcode(found.value.trim(), found.format);
+    } catch (e) {
+      // 読み取りの失敗は無視して次のフレームへ
+    } finally {
+      barcodeBusy = false;
+    }
+  }
+
+  // 誤読防止：同じ値を続けて2回読めたら登録する
+  function confirmBarcode(value, format) {
+    const now = Date.now();
+    if (value === pendingBarcode && now - pendingBarcodeAt < BARCODE_CONFIRM_MS) {
+      pendingBarcode = null;
+      handleCode(value, format);
+    } else {
+      pendingBarcode = value;
+      pendingBarcodeAt = now;
+    }
+  }
+
+  // QR・バーコード共通：かざし続けている間は同じ値を黙って無視する
+  function handleCode(val, format) {
+    const now = Date.now();
+    if (val === lastQrValue && now - lastQrSeenAt < SAME_QR_SILENT_MS) {
+      lastQrSeenAt = now;
+      return;
+    }
+    lastQrValue = val;
+    lastQrSeenAt = now;
+    processScan(val, format);
+  }
+
   window.onload = () => {
     updateFrameUI();
+    initBarcodeReaders();
     startQrCamera();
     if (window.opener) window.opener.postMessage({ type: 'SCANNER_READY' }, "*");
   };
@@ -256,22 +394,23 @@
       ctx.drawImage(video, 0, 0);
       const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
       const code = jsQR(imageData.data, canvas.width, canvas.height, { inversionAttempts: "dontInvert" });
-      if (!code) return;
-      const val = decodeQr(code);
-      if (!val || val.trim() === '') return;
-      const now = Date.now();
-      if (val === lastQrValue && now - lastQrSeenAt < SAME_QR_SILENT_MS) {
-        lastQrSeenAt = now; // かざし続けている間は黙って無視
+      if (!code) {
+        // QR が無いフレームでは、間隔をあけて1次元バーコードを試す
+        if (timestamp - lastBarcodeTry >= BARCODE_INTERVAL_MS) {
+          lastBarcodeTry = timestamp;
+          tryBarcode(video);
+        }
         return;
       }
-      lastQrValue = val;
-      lastQrSeenAt = now;
-      processScan(val);
+      const val = decodeQr(code);
+      if (!val || val.trim() === '') return;
+      handleCode(val, 'QR');
     }
     qrScanLoopId = requestAnimationFrame(scanLoop);
   }
 
   function stopQrCamera() {
+    pendingBarcode = null;
     if (qrScanLoopId) { cancelAnimationFrame(qrScanLoopId); qrScanLoopId = null; }
     if (qrStream) { qrStream.getTracks().forEach(t => t.stop()); qrStream = null; }
     document.getElementById('qr-video').srcObject = null;
@@ -354,7 +493,7 @@
       await worker.terminate();
       let rawText = result.data.text.replace(/\n/g, '').replace(/\s+/g, '').trim();
       if (rawText) {
-        processScan(findBestMatch(rawText));
+        processScan(findBestMatch(rawText), 'OCR');
         statusEl.innerText = "解析成功！";
       } else {
         statusEl.innerText = "文字が検出できませんでした。";
@@ -367,10 +506,11 @@
     btn.disabled = false;
   }
 
-  function processScan(val) {
+  function processScan(val, format) {
     if (scannedValues.includes(val)) { playBeep('error'); return; }
     playBeep('success');
     scannedValues.push(val);
+    scannedFormats.push(format || 'QR');
     updateUI();
   }
 
@@ -379,6 +519,7 @@
   function removeValue(index) {
     if (scannedValues[index] === lastQrValue) lastQrValue = null;
     scannedValues.splice(index, 1);
+    scannedFormats.splice(index, 1);
     updateUI();
   }
 
@@ -386,7 +527,7 @@
     const container = document.getElementById('result-list');
     document.getElementById('scan-count').innerText = scannedValues.length + " 件";
     if (scannedValues.length === 0) {
-      container.innerHTML = '<div style="color:#aaa; text-align:center; padding:20px 0;">QRをかざすか、文字を撮影してください</div>';
+      container.innerHTML = '<div style="color:#aaa; text-align:center; padding:20px 0;">QR・バーコードをかざすか、文字を撮影してください</div>';
       return;
     }
     container.innerHTML = "";
@@ -400,6 +541,10 @@
       no.style.cssText = 'width:30px; font-weight:bold; color:#7f8c8d; font-size:0.8rem;';
       no.textContent = (actualIndex + 1) + '.';
 
+      const tag = document.createElement('span');
+      tag.className = 'fmt-tag';
+      tag.textContent = String(scannedFormats[actualIndex] || 'QR').replace(/_/g, '');
+
       const input = document.createElement('input');
       input.type = 'text';
       input.value = val;
@@ -410,6 +555,7 @@
       del.addEventListener('click', () => removeValue(actualIndex));
 
       row.appendChild(no);
+      row.appendChild(tag);
       row.appendChild(input);
       row.appendChild(del);
       container.appendChild(row);
@@ -429,10 +575,13 @@
   }
 
   function sendDataToParent() {
-    const finalData = scannedValues.filter(v => v.trim() !== "");
+    const items = scannedValues
+      .map((v, i) => ({ value: v, format: scannedFormats[i] || 'QR' }))
+      .filter(it => it.value.trim() !== "");
+    const finalData = items.map(it => it.value);
     if (finalData.length === 0) { if (!confirm("データがありません。戻りますか？")) return; }
     if (window.opener) {
-      const payload = { type: 'AMC_QR_SCAN_RESULT', data: finalData };
+      const payload = { type: 'AMC_QR_SCAN_RESULT', data: finalData, items: items };
       window.opener.postMessage(payload, "*");
       for (let i = 0; i < window.opener.frames.length; i++) {
         try { window.opener.frames[i].postMessage(payload, "*"); } catch(e) {}

@@ -39,6 +39,7 @@
       transform: translate(-50%, -50%);
       width: 80%;
       aspect-ratio: 1.6;
+      transition: width 0.2s ease, aspect-ratio 0.2s ease;
       border: 3px solid #3498db;
       box-shadow: 0 0 0 9999px rgba(0,0,0,0.5);
       pointer-events: none;
@@ -86,13 +87,14 @@
   <div class="mode-control">
     <span id="mode-badge" class="mode-badge mode-QR">QR・バーコード</span>
     <button class="btn-switch" onclick="toggleMode()">🔄 切替</button>
+    <button id="btn-qrframe" class="btn-switch" onclick="toggleQrFrame()" style="background:#2980b9;">📏 枠:標準</button>
     <button id="btn-frame" class="btn-switch" onclick="toggleFrameSize()" style="display:none; background:#8e44ad;">📏 枠:大</button>
   </div>
 
   <div class="camera-wrapper">
     <div id="qr-container">
       <video id="qr-video" autoplay playsinline muted></video>
-      <div class="qr-guide"></div>
+      <div id="qr-guide" class="qr-guide"></div>
     </div>
     <div id="ocr-container">
       <video id="ocr-video" autoplay playsinline muted></video>
@@ -128,6 +130,8 @@
   //    無ければ（iPhone など）ZXing で読む。
   //  ・対象：CODE39・CODE128・NW-7（CODABAR）・JAN（EAN-13／EAN-8）。
   //  ・1次元は誤読を防ぐため、同じ値を2回続けて読めたときだけ登録する。
+  //  ・枠は「標準／1本／細」を切り替えられる。1次元は枠の中だけを読むので、
+  //    細い枠にすると並んだバーコードを1本ずつ読める（選んだ枠は端末に記憶）。
   //  ・呼び出し元へは従来の data（文字列の配列）に加えて、
   //    items（{ value, format } の配列）も渡す。data だけを見ている呼び出し元はそのまま動く。
   // ============================================================
@@ -148,6 +152,22 @@
     { label: '小', height: 5, top: 47.5 }
   ];
   let currentFrameIndex = 0;
+
+  // QR・バーコードの枠（幅は画面に対する％、ratio は 幅÷高さ）
+  //  ・標準：QR とバーコードの両方向け
+  //  ・1本 ：バーコード1本分の高さ。横幅を広げ、アップにしても端が切れにくい
+  //  ・細  ：並んだバーコードの1本だけを読みたいとき
+  const QR_FRAMES = [
+    { label: '標準', width: 80, ratio: 1.6 },
+    { label: '1本', width: 96, ratio: 3.2 },
+    { label: '細', width: 96, ratio: 5.5 }
+  ];
+  const QR_FRAME_KEY = 'amcScannerQrFrame';
+  let currentQrFrameIndex = 0;
+  try {
+    const saved = Number(localStorage.getItem(QR_FRAME_KEY));
+    if (saved >= 0 && saved < QR_FRAMES.length) currentQrFrameIndex = saved;
+  } catch (e) {}
 
   let qrStream = null;
   let qrScanLoopId = null;
@@ -231,11 +251,12 @@
     barcodeReady = !!(nativeDetector || zxingReader);
   }
 
-  // 枠（横長）の範囲を切り出して bar-canvas に描く
+  // 今の枠の範囲を切り出して bar-canvas に描く（画面の枠と同じ割合で切る）
   function drawGuideArea(video, canvas) {
+    const frame = QR_FRAMES[currentQrFrameIndex];
     const vw = video.videoWidth, vh = video.videoHeight;
-    const cw = Math.round(vw * 0.8);
-    const ch = Math.min(vh, Math.round(cw / 1.6));
+    const cw = Math.round(vw * frame.width / 100);
+    const ch = Math.min(vh, Math.round(cw / frame.ratio));
     const cx = Math.round((vw - cw) / 2), cy = Math.round((vh - ch) / 2);
     const scale = Math.min(1, BARCODE_MAX_WIDTH / cw);
     canvas.width = Math.round(cw * scale);
@@ -309,8 +330,24 @@
     processScan(val, format);
   }
 
+  // QR・バーコードの枠を切り替える
+  function toggleQrFrame() {
+    currentQrFrameIndex = (currentQrFrameIndex + 1) % QR_FRAMES.length;
+    try { localStorage.setItem(QR_FRAME_KEY, String(currentQrFrameIndex)); } catch (e) {}
+    pendingBarcode = null;
+    updateQrFrameUI();
+  }
+
+  function updateQrFrameUI() {
+    const frame = QR_FRAMES[currentQrFrameIndex];
+    document.getElementById('btn-qrframe').innerText = `📏 枠:${frame.label}`;
+    const guide = document.getElementById('qr-guide');
+    if (guide) { guide.style.width = `${frame.width}%`; guide.style.aspectRatio = String(frame.ratio); }
+  }
+
   window.onload = () => {
     updateFrameUI();
+    updateQrFrameUI();
     initBarcodeReaders();
     startQrCamera();
     if (window.opener) window.opener.postMessage({ type: 'SCANNER_READY' }, "*");
@@ -339,12 +376,14 @@
       document.getElementById('ocr-container').style.display = 'none';
       document.getElementById('btn-capture').style.display = 'none';
       document.getElementById('btn-frame').style.display = 'none';
+      document.getElementById('btn-qrframe').style.display = 'inline-block';
       startQrCamera();
     } else {
       document.getElementById('qr-container').style.display = 'none';
       document.getElementById('ocr-container').style.display = 'block';
       document.getElementById('btn-capture').style.display = 'block';
       document.getElementById('btn-frame').style.display = 'inline-block';
+      document.getElementById('btn-qrframe').style.display = 'none';
       startOcrCamera();
       if (newMode.id === 'JPN') document.getElementById('ocr-status').innerText = "※日本語の初回はAIデータのDLに少し時間がかかります";
     }

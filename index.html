@@ -46,7 +46,7 @@
       box-sizing: border-box;
     }
     .qr-guide::before {
-      content: 'QR・バーコードを枠内に合わせる（バーコードは横向き）';
+      content: 'QR・バーコードを枠に合わせる（横向き）';
       position: absolute;
       top: -26px;
       left: 0;
@@ -59,6 +59,16 @@
     }
     .ocr-guide { position: absolute; left: 10%; width: 80%; border: 3px solid #2ecc71; box-sizing: border-box; box-shadow: 0 0 0 9999px rgba(0,0,0,0.6); pointer-events: none; transition: all 0.3s ease; }
     .ocr-guide::before { content: 'この枠に文字を合わせる'; position: absolute; top: -25px; left: 0; width: 100%; text-align: center; color: #2ecc71; font-weight: bold; font-size: 14px; text-shadow: 1px 1px 2px #000; }
+    /* 読み取り成功・読込済みの表示（カメラの上に重ねる） */
+    .scan-flash { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%) scale(0.9); z-index: 5; width: max-content; max-width: 88%; padding: 14px 20px; border-radius: 12px; background: rgba(39, 174, 96, 0.92); color: #fff; font-weight: bold; font-size: 1.3rem; text-align: center; opacity: 0; transition: opacity 0.15s ease, transform 0.15s ease; pointer-events: none; box-shadow: 0 4px 12px rgba(0,0,0,0.3); }
+    .scan-flash.show { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+    .scan-flash.dup { background: rgba(230, 126, 34, 0.92); }
+    .scan-flash .flash-value { margin-top: 6px; font-size: 0.95rem; font-weight: normal; word-break: break-all; }
+    .qr-guide.hit, .ocr-guide.hit { border-color: #2ecc71 !important; border-width: 5px; }
+    .qr-guide.dupe, .ocr-guide.dupe { border-color: #e67e22 !important; border-width: 5px; }
+    /* カメラのすぐ下に出す「最新の読込」 */
+    .last-read { display: none; max-width: 500px; margin: 8px auto 0; padding: 8px 12px; border-radius: 8px; background: #e8f8f0; border: 1px solid #2ecc71; color: #1e8449; font-size: 0.9rem; font-weight: bold; text-align: left; word-break: break-all; }
+    .last-read.dup { background: #fdf2e9; border-color: #e67e22; color: #ba4a00; }
     .btn-capture { width: 100%; max-width: 500px; padding: 15px; background: #f39c12; color: white; border: none; border-radius: 8px; font-size: 1.2rem; font-weight: bold; cursor: pointer; margin-top: 15px; box-shadow: 0 4px #d35400; display: none; margin-left: auto; margin-right: auto; }
     .btn-capture:active { transform: translateY(2px); box-shadow: 0 2px #d35400; }
     .btn-capture:disabled { background: #ccc; box-shadow: 0 4px #aaa; cursor: not-allowed; }
@@ -100,7 +110,9 @@
       <video id="ocr-video" autoplay playsinline muted></video>
       <div id="ocr-guide" class="ocr-guide"></div>
     </div>
+    <div id="scan-flash" class="scan-flash"></div>
   </div>
+  <div id="last-read" class="last-read"></div>
   <canvas id="qr-canvas" style="display:none;"></canvas>
   <canvas id="bar-canvas" style="display:none;"></canvas>
 
@@ -129,7 +141,14 @@
   //    Android の Chrome などブラウザ標準の BarcodeDetector があればそれを使い、
   //    無ければ（iPhone など）ZXing で読む。
   //  ・対象：CODE39・CODE128・NW-7（CODABAR）・JAN（EAN-13／EAN-8）。
-  //  ・1次元は誤読を防ぐため、同じ値を2回続けて読めたときだけ登録する。
+  //  ・1次元は誤読を防ぐため、同じ値を2.5秒以内に2回読めたときだけ登録する
+  //    （間に別のバーコードを読んでもよい）。
+  //  ・カメラは 1920×1080 を求め、長いバーコードの細い線も読めるようにする。
+  //    QR はその画像を幅1280まで縮めて読む（従来と同じ重さ）。
+  //  ・読めたらカメラの上に「✓ 読込成功」と値を大きく出し、枠を緑に光らせ、
+  //    音（＋対応端末は振動）で知らせる。読込済みの値はオレンジで知らせる。
+  //    カメラのすぐ下にも最新の読込と件数を出す（下までスクロールしなくてよい）。
+  //  ・iPhone は最初に画面をタップするまで音が鳴らないため、最初のタップで音を有効にする。
   //  ・枠は「標準／1本／細」を切り替えられる。1次元は枠の中だけを読むので、
   //    細い枠にすると並んだバーコードを1本ずつ読める（選んだ枠は端末に記憶）。
   //  ・呼び出し元へは従来の data（文字列の配列）に加えて、
@@ -181,18 +200,22 @@
   // ビープ音用のAudioContextは1つを使い回す（毎回作るとブラウザの上限で鳴らなくなるため）
   let audioCtx = null;
 
+  // 読み取り結果の表示用
+  const FLASH_MS = 1200;
+  let flashTimer = null;
+
   // 1次元バーコード読み取りの設定
   const BARCODE_INTERVAL_MS = 200;   // 1次元を試す間隔（QRの読み取りを重くしないため）
-  const BARCODE_CONFIRM_MS = 1500;   // この時間内に同じ値を2回読めたら登録
-  const BARCODE_MAX_WIDTH = 1024;    // 解析する画像の最大幅（速度のため縮小）
+  const BARCODE_CONFIRM_MS = 2500;   // この時間内に同じ値を2回読めたら登録
+  const BARCODE_MAX_WIDTH = 1600;    // 解析する画像の最大幅（速度のため縮小）
+  const QR_MAX_WIDTH = 1280;         // QR を読む画像の最大幅
   const NATIVE_FORMATS = ['code_39', 'code_128', 'codabar', 'ean_13', 'ean_8'];
   let nativeDetector = null;
   let zxingReader = null;
   let barcodeReady = false;
   let barcodeBusy = false;
   let lastBarcodeTry = 0;
-  let pendingBarcode = null;
-  let pendingBarcodeAt = 0;
+  const barcodeSeen = new Map();     // 読めた値 → 最後に読めた時刻（確認待ち）
 
   // ============================================================
   // QRの中身を文字列に復号する
@@ -306,15 +329,18 @@
     }
   }
 
-  // 誤読防止：同じ値を続けて2回読めたら登録する
+  // 誤読防止：同じ値を BARCODE_CONFIRM_MS 以内に2回読めたら登録する
+  //  （枠に2本入って交互に読めても、それぞれ2回目で登録される）
   function confirmBarcode(value, format) {
     const now = Date.now();
-    if (value === pendingBarcode && now - pendingBarcodeAt < BARCODE_CONFIRM_MS) {
-      pendingBarcode = null;
+    for (const [v, t] of barcodeSeen) {
+      if (now - t > BARCODE_CONFIRM_MS) barcodeSeen.delete(v);
+    }
+    if (barcodeSeen.has(value)) {
+      barcodeSeen.delete(value);
       handleCode(value, format);
     } else {
-      pendingBarcode = value;
-      pendingBarcodeAt = now;
+      barcodeSeen.set(value, now);
     }
   }
 
@@ -334,7 +360,7 @@
   function toggleQrFrame() {
     currentQrFrameIndex = (currentQrFrameIndex + 1) % QR_FRAMES.length;
     try { localStorage.setItem(QR_FRAME_KEY, String(currentQrFrameIndex)); } catch (e) {}
-    pendingBarcode = null;
+    barcodeSeen.clear();
     updateQrFrameUI();
   }
 
@@ -404,12 +430,12 @@
 
     try {
       qrStream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: { exact: "environment" }, width: { ideal: 1280 }, height: { ideal: 720 } }
+        video: { facingMode: { exact: "environment" }, width: { ideal: 1920 }, height: { ideal: 1080 } }
       });
     } catch(e) {
       try {
         qrStream = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode: "environment", width: { ideal: 1280 }, height: { ideal: 720 } }
+          video: { facingMode: "environment", width: { ideal: 1920 }, height: { ideal: 1080 } }
         });
       } catch(e2) {
         alert("カメラの起動に失敗しました。");
@@ -427,10 +453,11 @@
       if (timestamp - lastScanTime < 66) return;
       lastScanTime = timestamp;
       if (video.readyState < video.HAVE_ENOUGH_DATA) return;
-      canvas.width = video.videoWidth;
-      canvas.height = video.videoHeight;
+      const qs = Math.min(1, QR_MAX_WIDTH / video.videoWidth);
+      canvas.width = Math.round(video.videoWidth * qs);
+      canvas.height = Math.round(video.videoHeight * qs);
       const ctx = canvas.getContext('2d', { willReadFrequently: true });
-      ctx.drawImage(video, 0, 0);
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
       const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
       const code = jsQR(imageData.data, canvas.width, canvas.height, { inversionAttempts: "dontInvert" });
       if (!code) {
@@ -449,7 +476,7 @@
   }
 
   function stopQrCamera() {
-    pendingBarcode = null;
+    barcodeSeen.clear();
     if (qrScanLoopId) { cancelAnimationFrame(qrScanLoopId); qrScanLoopId = null; }
     if (qrStream) { qrStream.getTracks().forEach(t => t.stop()); qrStream = null; }
     document.getElementById('qr-video').srcObject = null;
@@ -546,12 +573,72 @@
   }
 
   function processScan(val, format) {
-    if (scannedValues.includes(val)) { playBeep('error'); return; }
+    const fmt = format || 'QR';
+    if (scannedValues.includes(val)) {
+      playBeep('error');
+      vibrate([60, 60, 60]);
+      showScanResult('dup', val, fmt);
+      return;
+    }
     playBeep('success');
+    vibrate(80);
     scannedValues.push(val);
-    scannedFormats.push(format || 'QR');
+    scannedFormats.push(fmt);
     updateUI();
+    showScanResult('ok', val, fmt);
   }
+
+  // ============================================================
+  // 読み取り結果を読込部分のすぐそばに出す
+  //  ok ：緑で「✓ 読込成功」、dup：オレンジで「読込済み」
+  // ============================================================
+  function showScanResult(kind, val, fmt) {
+    const label = String(fmt).replace(/_/g, '');
+    const flash = document.getElementById('scan-flash');
+    flash.textContent = '';
+    const head = document.createElement('div');
+    head.textContent = kind === 'ok' ? `✓ 読込成功（${label}）` : '読込済み（登録しません）';
+    const body = document.createElement('div');
+    body.className = 'flash-value';
+    body.textContent = val;
+    flash.appendChild(head);
+    flash.appendChild(body);
+    flash.classList.toggle('dup', kind !== 'ok');
+    flash.classList.add('show');
+
+    const guides = [document.getElementById('qr-guide'), document.getElementById('ocr-guide')];
+    guides.forEach(g => { if (g) { g.classList.remove('hit', 'dupe'); g.classList.add(kind === 'ok' ? 'hit' : 'dupe'); } });
+
+    const last = document.getElementById('last-read');
+    last.textContent = (kind === 'ok' ? `最新：${val}（${label}）` : `読込済み：${val}`) + `　計 ${scannedValues.length} 件`;
+    last.classList.toggle('dup', kind !== 'ok');
+    last.style.display = 'block';
+
+    if (flashTimer) clearTimeout(flashTimer);
+    flashTimer = setTimeout(() => {
+      flash.classList.remove('show');
+      guides.forEach(g => { if (g) g.classList.remove('hit', 'dupe'); });
+    }, FLASH_MS);
+  }
+
+  function vibrate(pattern) {
+    try { if (navigator.vibrate) navigator.vibrate(pattern); } catch (e) {}
+  }
+
+  // iPhone などは画面に触れるまで音を出せないので、最初のタップで音を有効にする
+  function unlockAudio() {
+    try {
+      if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      if (audioCtx.state === 'suspended') audioCtx.resume();
+      const buf = audioCtx.createBuffer(1, 1, 22050);
+      const src = audioCtx.createBufferSource();
+      src.buffer = buf;
+      src.connect(audioCtx.destination);
+      src.start(0);
+    } catch (e) {}
+  }
+  document.addEventListener('touchstart', unlockAudio, { once: true, passive: true });
+  document.addEventListener('click', unlockAudio, { once: true });
 
   function updateValue(index, newVal) { scannedValues[index] = newVal; }
 
@@ -560,6 +647,9 @@
     scannedValues.splice(index, 1);
     scannedFormats.splice(index, 1);
     updateUI();
+    const last = document.getElementById('last-read');
+    if (scannedValues.length === 0) { last.style.display = 'none'; }
+    else { last.classList.remove('dup'); last.textContent = `計 ${scannedValues.length} 件`; }
   }
 
   function updateUI() {
